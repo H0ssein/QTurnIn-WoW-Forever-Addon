@@ -47,6 +47,72 @@ end
 
 local UpdateUnitMarks
 
+local updateTimer = nil
+local function QueueNameplateUpdate()
+    if updateTimer then
+        updateTimer:Cancel()
+    end
+    updateTimer = C_Timer.NewTimer(0.1, function()
+        updateTimer = nil
+        if not QTurnInDB or not QTurnInDB.nameplateMarks then return end
+        
+        -- Cache all current quest objectives from the log
+        local currentObjectives = {}
+        if C_QuestLog then
+            for i = 1, C_QuestLog.GetNumQuestLogEntries() do
+                local info = C_QuestLog.GetInfo(i)
+                if info and not info.isHeader then
+                    local objectives = C_QuestLog.GetQuestObjectives(info.questID)
+                    if objectives then
+                        for _, obj in ipairs(objectives) do
+                            local baseText = string.match(obj.text, "%d+/%d+[%s%-]*(.*)")
+                            if not baseText then baseText = string.match(obj.text, ".*[Ss]lain") end
+                            if not baseText then baseText = obj.text end
+                            if baseText then
+                                baseText = baseText:gsub("^[%s%-]+", ""):gsub("[%s%-]+$", "")
+                                if baseText ~= "" then
+                                    currentObjectives[baseText] = {
+                                        finished = obj.finished,
+                                        progress = obj.numFulfilled .. "/" .. obj.numRequired
+                                    }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Update all active skulls directly from the quest log cache
+        for unit, marks in pairs(activeMarks) do
+            local allFinished = true
+            for _, markFrame in ipairs(marks) do
+                if markFrame.baseStr then
+                    local logData = currentObjectives[markFrame.baseStr]
+                    if logData then
+                        if logData.finished then
+                            markFrame:Hide()
+                        else
+                            markFrame.text:SetText(logData.progress)
+                            markFrame:Show()
+                            allFinished = false
+                        end
+                    else
+                        allFinished = false
+                    end
+                end
+            end
+            
+            if allFinished then
+                local nameplate = C_NamePlate.GetNamePlateForUnit(unit)
+                if nameplate and nameplate.UnitFrame then
+                    nameplate.UnitFrame:SetScale(1.0)
+                end
+            end
+        end
+    end)
+end
+
 local function InitDB()
     if type(QTurnInDB) ~= "table" then
         QTurnInDB = {
@@ -169,7 +235,7 @@ local function GetQuestObjectives(unit)
                             seenObjectives[baseObjStr] = true
                         end
                         
-                        local obj = { isKill = false, progress = nil, icon = nil }
+                        local obj = { isKill = false, progress = nil, icon = nil, baseStr = baseObjStr }
                         
                         if string.match(text, "[Ss]lain") then
                             obj.isKill = true
@@ -251,6 +317,8 @@ UpdateUnitMarks = function(unit)
         else
             markFrame.text:SetText("")
         end
+        
+        markFrame.baseStr = obj.baseStr
         
         table.insert(activeMarks[unit], markFrame)
     end
@@ -346,13 +414,7 @@ frame:SetScript("OnEvent", function(self, event, unit, ...)
             RecycleMark(activeUnit)
         end
     elseif event == "QUEST_LOG_UPDATE" then
-        if not QTurnInDB or not QTurnInDB.nameplateMarks then return end
-        if C_NamePlate then
-            for _, nameplate in ipairs(C_NamePlate.GetNamePlates()) do
-                local u = nameplate.namePlateUnitToken
-                if u then UpdateUnitMarks(u) end
-            end
-        end
+        QueueNameplateUpdate()
     else
         DoAutoQuest(event)
     end
